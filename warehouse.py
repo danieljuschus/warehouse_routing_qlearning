@@ -10,7 +10,7 @@ import pandas as pd
 
 class Warehouse:
     """Warehouse class. Includes single agent. Does not include any training methods."""
-    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=1):
+    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=1, pick_pts_rand=True):
         if n_shelve_units % 2 or unit_width < 1:  # check inputs
             raise ValueError("Invalid inputs for warehouse dimensions/layout!")
         self.n_shelve_units = n_shelve_units  # number of shelve units, must be even
@@ -19,7 +19,11 @@ class Warehouse:
         self.grid_size = (1 + n_shelve_units//2*3, unit_width*2 + 3)  # grid size of warehouse: (rows, columns)
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
-        self.pick_pts = np.random.choice(self.shelves, n_pick_pts)  # choose pick points randomly from shelves
+        if pick_pts_rand:
+            self.pick_pts = np.random.choice(self.shelves, n_pick_pts)  # choose pick points randomly from shelves
+        else:
+            # values used in the report for the basic results section:
+            self.pick_pts = np.array([36, 18, 55, 24, 53])
         self.start = np.prod(self.grid_size) - self.grid_size[1]//2 - 1  # starting field
         self.states = self.get_states()  # get states
         self.action_str = ["up", "right", "down", "left"]
@@ -165,13 +169,13 @@ def q_table_to_action_list(q_table, env):
 
 
 if __name__ == "__main__":
-    env = Warehouse(4, 4, 3)  # create warehouse
+    env = Warehouse(4, 5, 5, False)  # create warehouse
     # n_shelve_units, unit_width, n_pick_pts
     env.render()
 
     q_table = np.zeros((env.n_states, env.n_actions))  # initialise q table
 
-    n_episodes = 5000  # number of episodes
+    n_episodes = 7000  # number of episodes
     n_steps = 100  # maximum number of steps per episode
 
     l_rate = 0.5  # learning rate
@@ -235,9 +239,24 @@ if __name__ == "__main__":
 
     print("Done in {} seconds.".format(round(time.time() - start_time, 3)))
 
-    plt.plot(range(n_episodes), rewards)
+    # Plot rewards
+    # plt.plot(range(n_episodes), rewards)
+    # plt.xlabel("Episode")
+    # plt.ylabel("Episode reward")
+    # plt.grid()
+    # plt.savefig("../basic_res_rewards.pdf")
+    # plt.show()
+
+    # Plot moving average of rewards
+    plt.plot(range(n_episodes), pd.DataFrame(rewards).rolling(100).mean().to_numpy(), c="k")
+    plt.scatter(range(n_episodes), rewards, marker=",", s=0.05, edgecolors=None)
+    plt.xlabel("Episode")
+    plt.ylabel("Reward")
+    plt.grid()
+    plt.savefig("../basic_res_rewards_moving.pdf")
     plt.show()
 
+    # Transform q-table to pandas dataframe for easier debugging (the indices help a lot)
     q_table_pd = pd.DataFrame(q_table, index=env.states, columns=env.action_str).round(3)
     # print(q_table_pd)
 
