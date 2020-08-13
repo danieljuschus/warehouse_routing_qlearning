@@ -20,7 +20,8 @@ class Warehouse:
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
         if pick_pts_rand:
-            self.pick_pts = np.random.choice(self.shelves, n_pick_pts)  # choose pick points randomly from shelves
+            self.pick_pts = np.random.choice(self.shelves, n_pick_pts, replace=False)  # choose pick points randomly
+            # from shelves
         else:
             # values used in the report for the basic results section:
             self.pick_pts = np.array([36, 18, 55, 24, 53])
@@ -157,6 +158,7 @@ def q_table_to_action_list(q_table, env):
     max_steps = 100
     env.reset()
     actions = []
+    rewards = 0
     done = False
     while not done:
         i += 1
@@ -164,33 +166,19 @@ def q_table_to_action_list(q_table, env):
             break
         action = np.argmax(q_table[env.states.index(env.state), :])
         actions.append(action)
-        done = env.step(action)[-1]
-    return actions
+        _, reward, done = env.step(action)
+        rewards += reward
+    return actions, rewards
 
 
-if __name__ == "__main__":
-    env = Warehouse(4, 5, 5, False)  # create warehouse
-    # n_shelve_units, unit_width, n_pick_pts
-    env.render()
-
+def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate):
+    """ Perform q-learning training on env."""
     q_table = np.zeros((env.n_states, env.n_actions))  # initialise q table
-
-    n_episodes = 7000  # number of episodes
-    n_steps = 100  # maximum number of steps per episode
-
-    l_rate = 0.5  # learning rate
-    d_rate = 0.99  # discount rate
     e_rate = 1  # exploration rate
-    max_e_rate = 1
-    min_e_rate = 0.001
-    e_d_rate = 0.0005  # exploration decay rate
-
     rewards = []
-
     dones = 0
     max_r = 0
 
-    start_time = time.time()
     # For each episode
     for episode in range(n_episodes):
         # Initialise episode
@@ -214,7 +202,8 @@ if __name__ == "__main__":
 
             # Update q_table
             q_table[old_state_idx, action] = q_table[old_state_idx, action] * (1 - l_rate) \
-                + l_rate * (reward + d_rate * np.max(q_table[env.states.index(new_state), :]))
+                                             + l_rate * (reward + d_rate * np.max(
+                q_table[env.states.index(new_state), :]))
 
             # Add reward
             rewards_current += reward
@@ -228,27 +217,33 @@ if __name__ == "__main__":
         rewards.append(rewards_current)
 
         # Update exploration rate
-        e_rate = min_e_rate + (max_e_rate-min_e_rate) * np.exp(-e_d_rate*episode)
+        e_rate = min_e_rate + (max_e_rate - min_e_rate) * np.exp(-e_d_rate * episode)
 
         if rewards_current > max_r:
             max_r = rewards_current
             actions_max = actions_current
 
         if not episode % 1000 and episode > 0:
+            # print every 1000 episodes
             print(episode, rewards[-1], len(actions_current), e_rate)
 
+    return rewards, q_table
+
+
+if __name__ == "__main__":
+    env = Warehouse(8, 5, 10, True)  # create warehouse
+    # n_shelve_units, unit_width, n_pick_pts
+    env.render()
+    n_episodes = 200
+
+    # Train
+    start_time = time.time()
+    rewards, q_table = train(env, n_episodes=n_episodes, n_steps=100, l_rate=0.5, d_rate=0.99, max_e_rate=1,
+                             min_e_rate=0.001, e_d_rate=0.1)
     print("Done in {} seconds.".format(round(time.time() - start_time, 3)))
 
-    # Plot rewards
-    # plt.plot(range(n_episodes), rewards)
-    # plt.xlabel("Episode")
-    # plt.ylabel("Episode reward")
-    # plt.grid()
-    # plt.savefig("../basic_res_rewards.pdf")
-    # plt.show()
-
     # Plot moving average of rewards
-    plt.plot(range(n_episodes), pd.DataFrame(rewards).rolling(100).mean().to_numpy(), c="k")
+    plt.plot(range(n_episodes), pd.DataFrame(rewards).rolling(10).mean().to_numpy(), c="k")
     plt.scatter(range(n_episodes), rewards, marker=",", s=0.05, edgecolors=None)
     plt.xlabel("Episode")
     plt.ylabel("Reward")

@@ -10,7 +10,7 @@ import pandas as pd
 
 class Warehouse:
     """Warehouse class. Includes single agent. Does not include any training methods."""
-    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=2, n_agents=2):
+    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=2, n_agents=2, pick_pts_rand=True):
         if n_shelve_units % 2 or unit_width < 1:  # check inputs
             raise ValueError("Invalid inputs for warehouse dimensions/layout!")
         self.n_shelve_units = n_shelve_units  # number of shelve units, must be even
@@ -20,7 +20,10 @@ class Warehouse:
         self.grid_size = (1 + n_shelve_units//2*3, unit_width*2 + 3)  # grid size of warehouse: (rows, columns)
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
-        self.pick_pts = np.random.choice(self.shelves, n_pick_pts, replace=False)  # choose pick points randomly from
+        if pick_pts_rand:
+            self.pick_pts = np.random.choice(self.shelves, n_pick_pts, replace=False)  # choose pick points randomly from
+        else:
+            self.pick_pts = [13, 17, 18]  # for the report
         # shelves without duplicates
         self.start = np.prod(self.grid_size) - self.grid_size[1]//2 - 1  # starting field
         self.states = self.get_states()  # get states
@@ -34,7 +37,7 @@ class Warehouse:
 
     def get_states(self):
         """Return list of all states. A state has the format (x, (a, b)) where x is the index of the current position
-        and (a, b) a sorted tuple of the pick position that have been visited"""
+        and (a, b) a sorted tuple of the pick positions that have been visited"""
         return [(*cc, tuple(sorted(ppc)))
                 for cc in product(self.corridors, repeat=self.n_agents) for ppc in powerset(self.pick_pts)]
 
@@ -118,7 +121,7 @@ class Warehouse:
         done = False
 
         current_pick_state = self.state[2]
-        # Determine new position for each actor
+        # Determine new position for each agent
         for i, pos in enumerate(self.position):
             # if action is valid for current field
             if actions[i] in self.possible_actions[self.corridors.index(pos)]:
@@ -171,13 +174,13 @@ def q_table_to_action_list(q_table, env):
 
 
 if __name__ == "__main__":
-    env = Warehouse(4, 2, 3, 2)  # create warehouse
+    env = Warehouse(2, 4, 3, 2, False)  # create warehouse
     # (n_shelve_units=2, unit_width=1, n_pick_pts=1, n_agents=2):
     env.render()
 
     q_table = np.zeros((env.n_states, env.n_actions**env.n_agents))  # initialise q table
 
-    n_episodes = 5000  # number of episodes
+    n_episodes = 15000  # number of episodes
     n_steps = 100  # maximum number of steps per episode
 
     l_rate = 0.75  # learning rate

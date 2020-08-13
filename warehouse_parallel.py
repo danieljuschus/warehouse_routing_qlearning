@@ -2,8 +2,10 @@ import time
 import random
 import ray
 import numpy as np
+from pylru import lrucache
 from more_itertools import split_into, powerset
 from warehouse import Warehouse, q_table_to_action_list
+import matplotlib.pyplot as plt
 
 
 @ray.remote
@@ -12,13 +14,12 @@ class Main:
     worker process."""
     def __init__(self, env):
         self.env = env
-        self.n_episodes = n_episodes
         self.q_table = np.zeros((self.env.n_states, self.env.n_actions))
-        self.cache = []
 
     def receive_q_loc(self, qt_loc, states):
-        """Receive local q table from worker and update global qt."""
+        """Receive local q table from worker and update global qt. Return reward that results from current q-table."""
         self.q_table[self.env.states.index(states[0]):self.env.states.index(states[-1])+1] = qt_loc
+        return q_table_to_action_list(self.q_table, self.env)[-1]
 
     def send_max_q(self, state):
         """Get max q value of state from global qt (send to worker)."""
@@ -32,7 +33,9 @@ class Main:
 @ray.remote
 class Worker:
     """ Worker process. Performs actions in its own part of the state space and communicates with Main periodically."""
-    def __init__(self, states, possible_actions, corridors, grid_size, start_global, pick_pts_global, main, id):
+    def __init__(self, env, states, possible_actions, corridors, grid_size, start_global, pick_pts_global, main, id,
+                 update_interval, cache_size, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate):
+        self.env = env
         self.states = states
         self.grid_size = grid_size
         self.possible_actions = possible_actions
@@ -45,6 +48,15 @@ class Worker:
         self.state = (self.position, ())
         self.main = main
         self.id = id
+        self.update_interval = update_interval
+        self.cache = lrucache(cache_size)
+        self.n_episodes = n_episodes
+        self.n_steps = n_steps
+        self.l_rate = l_rate
+        self.d_rate = d_rate
+        self.max_e_rate = max_e_rate
+        self.min_e_rate = min_e_rate
+        self.e_d_rate = e_d_rate
 
     def reset(self):
         """Reset local state"""
@@ -95,78 +107,94 @@ class Worker:
             max_next = np.max(self.qt_loc[self.states.index(new_state), :])
         else:  # finish episode and get max next from global q table from main
             done = True
-            max_next = self.main.send_max_q.remote(new_state)  # no cache for now
-            max_next = ray.get(max_next)
+            max_next = self.get_remote_max_q(new_state)
+
 
         # Update local q-table
-        self.qt_loc[old_state_idx, action] = self.qt_loc[old_state_idx, action] * (1 - l_rate) \
-            + l_rate * (reward + d_rate * max_next)
+        self.qt_loc[old_state_idx, action] = self.qt_loc[old_state_idx, action] * (1 - self.l_rate) \
+            + self.l_rate * (reward + self.d_rate * max_next)
 
-        return done, reward
+        return done
+
+    def get_remote_max_q(self, state):
+        def get_from_main(state):
+            return ray.get(self.main.send_max_q.remote(state))
+        if state not in self.cache:
+            self.cache[state] = get_from_main(state)
+        return self.cache[state]
 
     def train(self):
         """Run local training process"""
         e_rate = 1
-        update_interval = 50
         rewards = []
         # For each episode
-        for episode in range(n_episodes):
+        for episode in range(self.n_episodes):
             self.reset()
-            rewards_current = 0
 
             # For each step
-            for step in range(n_steps):
+            for step in range(self.n_steps):
                 # Pick action
                 if random.uniform(0, 1) > e_rate:  # exploit
                     action = np.argmax(self.qt_loc[self.states.index(self.state), :])  # pick best action from
                     # current state
                 else:  # explore
-                    action = random.choice(env.actions)  # choose random action
+                    action = random.choice(self.env.actions)  # choose random action
 
                 # Take action
-                done, reward = self.step(action=action)
-                rewards_current += reward
+                done = self.step(action=action)
 
                 # Break loop if done
                 if done:
                     break
 
-            # Add episode reward to list
-            rewards.append(rewards_current)
-
             # Update exploration rate
-            e_rate = min_e_rate + (max_e_rate - min_e_rate) * np.exp(-e_d_rate * episode)
+            e_rate = self.min_e_rate + (self.max_e_rate - self.min_e_rate) * np.exp(-self.e_d_rate * episode)
 
-            # Update main q-table periodically
-            if not episode % update_interval:
-                self.main.receive_q_loc.remote(qt_loc=self.qt_loc, states=self.states)
+            # Update main q-table periodically (send local to main)
+            if not episode % self.update_interval:
+                # print(episode)
+                reward_total = ray.get(self.main.receive_q_loc.remote(qt_loc=self.qt_loc, states=self.states))
+                rewards.append(reward_total)
+
+        return rewards
 
 
-env = Warehouse(8, 5, 5)
-n_proc = 6
-n_episodes = 5000
+def train_parallel(env, n_proc, update_interval, cache_size, n_episodes, n_steps, l_rate, d_rate, max_e_rate,
+                   min_e_rate, e_d_rate):
+    """Perform parallel q-learning on env."""
+    corridors_split = np.array_split(env.corridors, n_proc)
+    possible_actions_split = list(split_into(env.possible_actions, [len(c) for c in corridors_split]))
+    states_split = list(split_into(env.states, [len(c) * len(list(powerset(env.pick_pts))) for c in corridors_split]))
+    ray.init()
+    main = Main.remote(env=env)
+    workers = [Worker.remote(env=env, states=states_slice, possible_actions=actions_slice, corridors=corridors_slice,
+                             id=i, grid_size=env.grid_size, start_global=env.start, pick_pts_global=env.pick_pts,
+                             main=main, update_interval=update_interval, cache_size=cache_size, n_episodes=n_episodes,
+                             n_steps=n_steps, l_rate=l_rate, d_rate=d_rate, max_e_rate=max_e_rate,
+                             min_e_rate=min_e_rate, e_d_rate=e_d_rate)
+               for i, (states_slice, actions_slice, corridors_slice)
+               in enumerate(zip(states_split, possible_actions_split, corridors_split))]
+    s = time.time()
+    rewards_final = ray.get([worker.train.remote() for worker in workers])
+    exec_time = time.time() - s
+    q_table_final = ray.get(main.send_q_table.remote())
+    ray.shutdown()
+    actions_final, _ = q_table_to_action_list(q_table_final, env)
+    return actions_final, rewards_final, exec_time
 
-n_steps = 100
-l_rate = 0.5  # learning rate
-d_rate = 0.99  # discount rate
-max_e_rate = 1
-min_e_rate = 0.001
-e_d_rate = 0.0005  # exploration decay rate
 
-corridors_split = np.array_split(env.corridors, n_proc)
-possible_actions_split = list(split_into(env.possible_actions, [len(c) for c in corridors_split]))
-states_split = list(split_into(env.states, [len(c)*len(list(powerset(env.pick_pts))) for c in corridors_split]))
+if __name__ == "__main__":
+    env = Warehouse(8, 5, 5)
+    env.render()
+    n_proc = 4
+    n_episodes = 6000
+    update_interval = 500
 
-ray.init()
-main = Main.remote(env=env)
-workers = [Worker.remote(states=states_slice, possible_actions=actions_slice, corridors=corridors_slice, id=i,
-                         grid_size=env.grid_size, start_global=env.start, pick_pts_global=env.pick_pts, main=main)
-           for i, (states_slice, actions_slice, corridors_slice)
-           in enumerate(zip(states_split, possible_actions_split, corridors_split))]
-s = time.time()
-ray.get([worker.train.remote() for worker in workers])
-q_table_final = ray.get(main.send_q_table.remote())
-e = time.time() - s
-print("Finished in {} seconds. Determining optimal actions from q-table...".format(e))
-ray.shutdown()
-actions_final = q_table_to_action_list(q_table_final, env)
+    actions_final, rewards_final, exec_time = train_parallel(env, n_proc=n_proc, update_interval=update_interval,
+                                                             n_episodes=n_episodes, cache_size=10, n_steps=100,
+                                                             l_rate=0.5, d_rate=0.99, max_e_rate=1, min_e_rate=0.001,
+                                                             e_d_rate=0.1)
+
+    plt.plot(range(0, n_episodes, update_interval), list(map(sum, zip(*rewards_final))))
+    plt.grid()
+    plt.show()

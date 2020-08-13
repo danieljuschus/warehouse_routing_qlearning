@@ -2,9 +2,8 @@ import numpy as np
 import random
 import time
 from itertools import chain, combinations
-from more_itertools import sort_together
+from more_itertools import sort_together, powerset
 from math import comb  # Leave this for alternative calculation of number of states, might be useful for debugging
-from tabulate import tabulate  # Delete this?
 import termtables as tt
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,7 +11,7 @@ import pandas as pd
 
 class Warehouse:
     """Warehouse class. Includes single agent. Does not include any training methods."""
-    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=1, capacity=1):
+    def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=1, capacity=1, pick_pts_rand=True):
         if n_shelve_units % 2 or unit_width < 1:  # check inputs
             raise ValueError("Invalid inputs for warehouse dimensions/layout!")
         self.n_shelve_units = n_shelve_units  # number of shelve units, must be even
@@ -21,7 +20,10 @@ class Warehouse:
         self.grid_size = (1 + n_shelve_units//2*3, unit_width*2 + 3)  # grid size of warehouse: (rows, columns)
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
-        self.pick_pts = np.random.choice(self.shelves, n_pick_pts)  # choose pick points randomly from shelves
+        if pick_pts_rand:
+            self.pick_pts = np.random.choice(self.shelves, n_pick_pts, replace=False)  # choose pick points randomly
+        else:
+            self.pick_pts = [13, 17, 18]  # for the report
         self.capacity = capacity  # capacity of agent, each pick point has a load of 1
         self.start = np.prod(self.grid_size) - self.grid_size[1]//2 - 1  # starting field
         self.states = self.get_states()  # get states
@@ -174,7 +176,7 @@ def q_table_to_action_list(q_table, env):
 
 
 if __name__ == "__main__":
-    env = Warehouse(4, 3, 3, 2)  # create warehouse
+    env = Warehouse(2, 4, 3, 2, False)  # create warehouse
     #  n_shelve_units, unit_width, n_pick_pts, capacity):
     env.render()
 

@@ -12,6 +12,7 @@ more-itertools = "*"
 matplotlib = "*"
 pandas = "*"
 ray = "*"
+pylru = "*"
 
 [requires]
 python_version = "3.8"
