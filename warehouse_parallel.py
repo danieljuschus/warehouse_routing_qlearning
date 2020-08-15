@@ -12,14 +12,20 @@ import matplotlib.pyplot as plt
 class Main:
     """ Main process. Contains global q-table. Receives local q-tables and sends max q values for a given state to
     worker process."""
-    def __init__(self, env):
+    def __init__(self, env, n_proc, r_threshold):
         self.env = env
+        self.n_proc = n_proc
+        self.r_threshold = r_threshold
         self.q_table = np.zeros((self.env.n_states, self.env.n_actions))
+        self.stop = False
 
     def receive_q_loc(self, qt_loc, states):
         """Receive local q table from worker and update global qt. Return reward that results from current q-table."""
         self.q_table[self.env.states.index(states[0]):self.env.states.index(states[-1])+1] = qt_loc
-        return q_table_to_action_list(self.q_table, self.env)[-1]
+        rewards = q_table_to_action_list(self.q_table, self.env)[-1]
+        if rewards == self.r_threshold:
+            self.stop = True
+        return rewards, self.stop
 
     def send_max_q(self, state):
         """Get max q value of state from global qt (send to worker)."""
@@ -109,7 +115,6 @@ class Worker:
             done = True
             max_next = self.get_remote_max_q(new_state)
 
-
         # Update local q-table
         self.qt_loc[old_state_idx, action] = self.qt_loc[old_state_idx, action] * (1 - self.l_rate) \
             + self.l_rate * (reward + self.d_rate * max_next)
@@ -127,6 +132,7 @@ class Worker:
         """Run local training process"""
         e_rate = 1
         rewards = []
+
         # For each episode
         for episode in range(self.n_episodes):
             self.reset()
@@ -151,31 +157,37 @@ class Worker:
             e_rate = self.min_e_rate + (self.max_e_rate - self.min_e_rate) * np.exp(-self.e_d_rate * episode)
 
             # Update main q-table periodically (send local to main)
-            if not episode % self.update_interval:
-                # print(episode)
-                reward_total = ray.get(self.main.receive_q_loc.remote(qt_loc=self.qt_loc, states=self.states))
+            if not episode % self.update_interval and episode>0:
+                reward_total, stop = ray.get(self.main.receive_q_loc.remote(qt_loc=self.qt_loc, states=self.states))
                 rewards.append(reward_total)
+
+                if stop:
+                    break
 
         return rewards
 
 
 def train_parallel(env, n_proc, update_interval, cache_size, n_episodes, n_steps, l_rate, d_rate, max_e_rate,
-                   min_e_rate, e_d_rate):
+                   min_e_rate, e_d_rate, r_threshold=None):
     """Perform parallel q-learning on env."""
     corridors_split = np.array_split(env.corridors, n_proc)
     possible_actions_split = list(split_into(env.possible_actions, [len(c) for c in corridors_split]))
     states_split = list(split_into(env.states, [len(c) * len(list(powerset(env.pick_pts))) for c in corridors_split]))
+
     ray.init()
-    main = Main.remote(env=env)
-    workers = [Worker.remote(env=env, states=states_slice, possible_actions=actions_slice, corridors=corridors_slice,
-                             id=i, grid_size=env.grid_size, start_global=env.start, pick_pts_global=env.pick_pts,
-                             main=main, update_interval=update_interval, cache_size=cache_size, n_episodes=n_episodes,
-                             n_steps=n_steps, l_rate=l_rate, d_rate=d_rate, max_e_rate=max_e_rate,
-                             min_e_rate=min_e_rate, e_d_rate=e_d_rate)
+    main = Main.remote(env=env, n_proc=n_proc, r_threshold=r_threshold)
+    workers = [Worker.options(
+        name="worker" + str(i)).remote(
+        env=env, states=states_slice, possible_actions=actions_slice, corridors=corridors_slice,
+        id=i, grid_size=env.grid_size, start_global=env.start, pick_pts_global=env.pick_pts,
+        main=main, update_interval=update_interval, cache_size=cache_size, n_episodes=n_episodes,
+        n_steps=n_steps, l_rate=l_rate, d_rate=d_rate, max_e_rate=max_e_rate,
+        min_e_rate=min_e_rate, e_d_rate=e_d_rate)
                for i, (states_slice, actions_slice, corridors_slice)
                in enumerate(zip(states_split, possible_actions_split, corridors_split))]
     s = time.time()
-    rewards_final = ray.get([worker.train.remote() for worker in workers])
+    rewards = ray.get([worker.train.remote() for worker in workers])
+    rewards_final = list(map(max, zip(*rewards)))
     exec_time = time.time() - s
     q_table_final = ray.get(main.send_q_table.remote())
     ray.shutdown()
@@ -184,17 +196,17 @@ def train_parallel(env, n_proc, update_interval, cache_size, n_episodes, n_steps
 
 
 if __name__ == "__main__":
-    env = Warehouse(8, 5, 5)
+    env = Warehouse(8, 5, 6, False)
     env.render()
     n_proc = 4
-    n_episodes = 6000
-    update_interval = 500
+    n_episodes = 10000
+    update_interval = 100
 
     actions_final, rewards_final, exec_time = train_parallel(env, n_proc=n_proc, update_interval=update_interval,
-                                                             n_episodes=n_episodes, cache_size=10, n_steps=100,
-                                                             l_rate=0.5, d_rate=0.99, max_e_rate=1, min_e_rate=0.001,
-                                                             e_d_rate=0.1)
-
-    plt.plot(range(0, n_episodes, update_interval), list(map(sum, zip(*rewards_final))))
+                                                             n_episodes=n_episodes, cache_size=20, n_steps=100,
+                                                             l_rate=1., d_rate=1., max_e_rate=1, min_e_rate=0.001,
+                                                             e_d_rate=0.001, r_threshold=117)
+    print(exec_time)
+    plt.plot(range(0, len(rewards_final)*update_interval, update_interval), rewards_final)
     plt.grid()
     plt.show()

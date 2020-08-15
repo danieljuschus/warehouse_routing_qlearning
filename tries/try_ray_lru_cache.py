@@ -22,7 +22,7 @@ class Foo:
 
 
 ray.init()
-f = Foo.remote()
+f = Foo.options(name="bar").remote()
 s = time.time()
 ray.get([f.foo.remote(x=i) for i in [1, 2, 1]])
 print(time.time()-s)

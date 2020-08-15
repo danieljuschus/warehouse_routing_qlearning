@@ -1,11 +1,11 @@
-import numpy as np
 import random
 import time
-from more_itertools import sort_together, powerset
-from math import comb  # Leave this for alternative calculation of number of states, might be useful for debugging
 import termtables as tt
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
+from more_itertools import sort_together, powerset
+from math import comb  # Leave this for alternative calculation of number of states, might be useful for debugging
 
 
 class Warehouse:
@@ -24,7 +24,9 @@ class Warehouse:
             # from shelves
         else:
             # values used in the report for the basic results section:
-            self.pick_pts = np.array([36, 18, 55, 24, 53])
+            # self.pick_pts = np.array([36, 18, 55, 24, 53])
+            # values used for sequential vs parallel comparison
+            self.pick_pts = np.array([17, 114, 109,  22,  92, 133])
         self.start = np.prod(self.grid_size) - self.grid_size[1]//2 - 1  # starting field
         self.states = self.get_states()  # get states
         self.action_str = ["up", "right", "down", "left"]
@@ -171,13 +173,11 @@ def q_table_to_action_list(q_table, env):
     return actions, rewards
 
 
-def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate):
+def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate, r_threshold=None):
     """ Perform q-learning training on env."""
     q_table = np.zeros((env.n_states, env.n_actions))  # initialise q table
     e_rate = 1  # exploration rate
     rewards = []
-    dones = 0
-    max_r = 0
 
     # For each episode
     for episode in range(n_episodes):
@@ -201,16 +201,15 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
             actions_current.append(action)
 
             # Update q_table
-            q_table[old_state_idx, action] = q_table[old_state_idx, action] * (1 - l_rate) \
-                                             + l_rate * (reward + d_rate * np.max(
-                q_table[env.states.index(new_state), :]))
+            q_table[old_state_idx,
+                    action] = q_table[old_state_idx, action] * (1 - l_rate) \
+                + l_rate * (reward + d_rate * np.max(q_table[env.states.index(new_state), :]))
 
             # Add reward
             rewards_current += reward
 
             # Break loop if done
             if done:
-                dones += 1
                 break
 
         # Add episode reward to list
@@ -219,32 +218,33 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
         # Update exploration rate
         e_rate = min_e_rate + (max_e_rate - min_e_rate) * np.exp(-e_d_rate * episode)
 
-        if rewards_current > max_r:
-            max_r = rewards_current
-            actions_max = actions_current
-
-        if not episode % 1000 and episode > 0:
-            # print every 1000 episodes
+        # Do every n episodes
+        if not episode % 100 and episode > 0:
+            # Print for debugging
             print(episode, rewards[-1], len(actions_current), e_rate)
 
-    return rewards, q_table
+            # Termination criterion from sequential vs. parallel comparison
+            if all([ri == r_threshold for ri in rewards[-10:]]):
+                break
+
+    return q_table_to_action_list(q_table, env), rewards
 
 
 if __name__ == "__main__":
-    env = Warehouse(8, 5, 10, True)  # create warehouse
+    env = Warehouse(8, 5, 8, True)  # create warehouse
     # n_shelve_units, unit_width, n_pick_pts
     env.render()
-    n_episodes = 200
+    n_episodes = 1000
 
     # Train
     start_time = time.time()
-    rewards, q_table = train(env, n_episodes=n_episodes, n_steps=100, l_rate=0.5, d_rate=0.99, max_e_rate=1,
-                             min_e_rate=0.001, e_d_rate=0.1)
+    actions_final, rewards = train(env, n_episodes=n_episodes, n_steps=100, l_rate=1., d_rate=1., max_e_rate=1,
+                                   min_e_rate=0.001, e_d_rate=0.1)
     print("Done in {} seconds.".format(round(time.time() - start_time, 3)))
 
     # Plot moving average of rewards
-    plt.plot(range(n_episodes), pd.DataFrame(rewards).rolling(10).mean().to_numpy(), c="k")
-    plt.scatter(range(n_episodes), rewards, marker=",", s=0.05, edgecolors=None)
+    plt.plot(range(len(rewards)), pd.DataFrame(rewards).rolling(10).mean().to_numpy(), c="k")
+    plt.scatter(range(len(rewards)), rewards, marker=",", s=0.05, edgecolors=None)
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.grid()
@@ -252,7 +252,4 @@ if __name__ == "__main__":
     plt.show()
 
     # Transform q-table to pandas dataframe for easier debugging (the indices help a lot)
-    q_table_pd = pd.DataFrame(q_table, index=env.states, columns=env.action_str).round(3)
-    # print(q_table_pd)
-
-    print(q_table_to_action_list(q_table, env))
+    # q_table_pd = pd.DataFrame(q_table, index=env.states, columns=env.action_str).round(3)
