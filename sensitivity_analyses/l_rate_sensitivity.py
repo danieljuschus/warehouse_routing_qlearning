@@ -11,14 +11,13 @@ n_episodes = 7000
 qs = []
 
 for l_rate in l_rates:
-    r, q = train(env, n_episodes=n_episodes, n_steps=100, l_rate=l_rate, d_rate=0.99, max_e_rate=1,
+    _, r = train(env, n_episodes=n_episodes, n_steps=100, l_rate=l_rate, d_rate=0.99, max_e_rate=1,
                  min_e_rate=0.001, e_d_rate=0.0005)
-    qs.append(pd.DataFrame(q, index=[str(state) for state in env.states], columns=env.action_str).round(3))
     plt.plot(range(n_episodes), pd.DataFrame(r).rolling(100).mean().to_numpy(), label=str(l_rate))
 
 plt.grid()
 plt.legend(title="Learning rate:")
 plt.xlabel("Episode")
 plt.ylabel("Reward")
-plt.savefig("../basic_lres_sens.pdf")
+plt.savefig("../../basic_lres_sens.pdf")
 plt.show()

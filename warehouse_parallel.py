@@ -20,10 +20,11 @@ class Main:
         self.stop = False
 
     def receive_q_loc(self, qt_loc, states):
-        """Receive local q table from worker and update global qt. Return reward that results from current q-table."""
-        self.q_table[self.env.states.index(states[0]):self.env.states.index(states[-1])+1] = qt_loc
-        rewards = q_table_to_action_list(self.q_table, self.env)[-1]
-        if rewards == self.r_threshold:
+        """Receive local q table from worker and update global qt. Return reward that results from current q-table
+        and termination boolean if reward threshold is available."""
+        self.q_table[self.env.states.index(states[0]):self.env.states.index(states[-1])+1] = qt_loc  # update q-table
+        rewards = q_table_to_action_list(self.q_table, self.env)[-1]  # get reward resulting from current q-table
+        if self.r_threshold and rewards >= self.r_threshold:  # current reward above threshold (and threshold available)
             self.stop = True
         return rewards, self.stop
 
@@ -41,21 +42,21 @@ class Worker:
     """ Worker process. Performs actions in its own part of the state space and communicates with Main periodically."""
     def __init__(self, env, states, possible_actions, corridors, grid_size, start_global, pick_pts_global, main, id,
                  update_interval, cache_size, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate):
-        self.env = env
-        self.states = states
-        self.grid_size = grid_size
-        self.possible_actions = possible_actions
-        self.corridors = corridors
-        self.pick_pts_global = pick_pts_global  # use global variable instead?
-        self.qt_loc = np.zeros((len(self.states), 4))
-        self.start_global = start_global  # use global variable instead?
-        self.start = self.corridors[0]
+        self.env = env  # complete environment
+        self.states = states  # list of local states
+        self.grid_size = grid_size  # grid size of complete environment
+        self.possible_actions = possible_actions  # possible actions of local partition
+        self.corridors = corridors  # local corridors
+        self.pick_pts_global = pick_pts_global  # global pick points
+        self.qt_loc = np.zeros((len(self.states), 4))  # initialise local q-table
+        self.start_global = start_global  # global starting position
+        self.start = self.corridors[0]  # local starting position
         self.position = self.start
         self.state = (self.position, ())
-        self.main = main
-        self.id = id
+        self.main = main  # reference to main process
+        self.id = id  # id of worker process
         self.update_interval = update_interval
-        self.cache = lrucache(cache_size)
+        self.cache = lrucache(cache_size)  # initialise empty LRU cache
         self.n_episodes = n_episodes
         self.n_steps = n_steps
         self.l_rate = l_rate
@@ -122,9 +123,10 @@ class Worker:
         return done
 
     def get_remote_max_q(self, state):
+        """Function to get max q value of given state from main process. Includes caching."""
         def get_from_main(state):
             return ray.get(self.main.send_max_q.remote(state))
-        if state not in self.cache:
+        if state not in self.cache:  # if state is not yet in cache, get the state from main and add to cache
             self.cache[state] = get_from_main(state)
         return self.cache[state]
 
@@ -157,7 +159,7 @@ class Worker:
             e_rate = self.min_e_rate + (self.max_e_rate - self.min_e_rate) * np.exp(-self.e_d_rate * episode)
 
             # Update main q-table periodically (send local to main)
-            if not episode % self.update_interval and episode>0:
+            if not episode % self.update_interval and episode > 0:
                 reward_total, stop = ray.get(self.main.receive_q_loc.remote(qt_loc=self.qt_loc, states=self.states))
                 rewards.append(reward_total)
 
@@ -170,12 +172,13 @@ class Worker:
 def train_parallel(env, n_proc, update_interval, cache_size, n_episodes, n_steps, l_rate, d_rate, max_e_rate,
                    min_e_rate, e_d_rate, r_threshold=None):
     """Perform parallel q-learning on env."""
+    # Split up environment grid according to number of processes
     corridors_split = np.array_split(env.corridors, n_proc)
     possible_actions_split = list(split_into(env.possible_actions, [len(c) for c in corridors_split]))
     states_split = list(split_into(env.states, [len(c) * len(list(powerset(env.pick_pts))) for c in corridors_split]))
 
-    ray.init()
-    main = Main.remote(env=env, n_proc=n_proc, r_threshold=r_threshold)
+    ray.init()  # start up ray
+    main = Main.remote(env=env, n_proc=n_proc, r_threshold=r_threshold)  # define main process
     workers = [Worker.options(
         name="worker" + str(i)).remote(
         env=env, states=states_slice, possible_actions=actions_slice, corridors=corridors_slice,
@@ -184,19 +187,22 @@ def train_parallel(env, n_proc, update_interval, cache_size, n_episodes, n_steps
         n_steps=n_steps, l_rate=l_rate, d_rate=d_rate, max_e_rate=max_e_rate,
         min_e_rate=min_e_rate, e_d_rate=e_d_rate)
                for i, (states_slice, actions_slice, corridors_slice)
-               in enumerate(zip(states_split, possible_actions_split, corridors_split))]
+               in enumerate(zip(states_split, possible_actions_split, corridors_split))]  # define all workers
     s = time.time()
-    rewards = ray.get([worker.train.remote() for worker in workers])
+    rewards = ray.get([worker.train.remote() for worker in workers])  # start local training process for all workers
+    # Since the workers do not step through the episodes synchronously, the reward value that they received from the
+    # global q-table at given update intervals can differ. Therefore, take the maximum value of all workers, as this
+    # presents the actual best optimal path at that moment.
     rewards_final = list(map(max, zip(*rewards)))
     exec_time = time.time() - s
-    q_table_final = ray.get(main.send_q_table.remote())
-    ray.shutdown()
-    actions_final, _ = q_table_to_action_list(q_table_final, env)
+    q_table_final = ray.get(main.send_q_table.remote())  # get final q-table from main process
+    ray.shutdown()  # shutdown ray
+    actions_final, _ = q_table_to_action_list(q_table_final, env)  # get final action list from q-table
     return actions_final, rewards_final, exec_time
 
 
 if __name__ == "__main__":
-    env = Warehouse(8, 5, 6, False)
+    env = Warehouse(8, 4, 4)
     env.render()
     n_proc = 4
     n_episodes = 10000
@@ -205,8 +211,8 @@ if __name__ == "__main__":
     actions_final, rewards_final, exec_time = train_parallel(env, n_proc=n_proc, update_interval=update_interval,
                                                              n_episodes=n_episodes, cache_size=20, n_steps=100,
                                                              l_rate=1., d_rate=1., max_e_rate=1, min_e_rate=0.001,
-                                                             e_d_rate=0.001, r_threshold=117)
-    print(exec_time)
+                                                             e_d_rate=0.001)
+
     plt.plot(range(0, len(rewards_final)*update_interval, update_interval), rewards_final)
     plt.grid()
     plt.show()

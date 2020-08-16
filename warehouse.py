@@ -15,7 +15,7 @@ class Warehouse:
             raise ValueError("Invalid inputs for warehouse dimensions/layout!")
         self.n_shelve_units = n_shelve_units  # number of shelve units, must be even
         self.unit_width = unit_width  # width of each shelve unit
-        self.n_pick_pts = n_pick_pts
+        self.n_pick_pts = n_pick_pts  # number of pick points
         self.grid_size = (1 + n_shelve_units//2*3, unit_width*2 + 3)  # grid size of warehouse: (rows, columns)
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
@@ -27,14 +27,16 @@ class Warehouse:
             # self.pick_pts = np.array([36, 18, 55, 24, 53])
             # values used for sequential vs parallel comparison
             self.pick_pts = np.array([17, 114, 109,  22,  92, 133])
+            # values used for cache size sensitivity analysis
+            # self.pick_pts = np.array([76, 54, 27])
         self.start = np.prod(self.grid_size) - self.grid_size[1]//2 - 1  # starting field
         self.states = self.get_states()  # get states
         self.action_str = ["up", "right", "down", "left"]
-        self.actions = range(len(self.action_str))
-        self.n_states = len(self.states)
+        self.actions = range(len(self.action_str))  # possible actions
+        self.n_states = len(self.states)  # total number of states
         # Alternative way to calculate number of states, might be useful for debugging
         # self.n_states = len(self.corridors)*sum([comb(len(self.pick_pts), i) for i in range(len(self.pick_pts)+1)])
-        self.n_actions = len(self.actions)
+        self.n_actions = len(self.actions)  # number of actions
         self.position = self.start  # set starting position
         self.state = (self.position, ())  # set starting state
 
@@ -88,7 +90,7 @@ class Warehouse:
         return idx//self.grid_size[1], idx % self.grid_size[1]
 
     def reset(self):
-        """Reset position of agent and reset state."""
+        """Reset position of agent to starting point and reset state."""
         self.position = self.start
         self.state = (self.position, ())
 
@@ -103,7 +105,7 @@ class Warehouse:
         tt.print(repr)
 
     def render_possible_actions(self):
-        """Render warehouse with possible actions for each corridor field."""
+        """Render warehouse in console with possible actions for each corridor field."""
         repr = np.empty(self.grid_size, dtype="<U2")  # initialise warehouse
         for shelf in self.shelves:  # show shelves
             repr[self.pos_tuple(shelf)] = chr(9633)
@@ -139,10 +141,10 @@ class Warehouse:
         elif new_position - self.grid_size[1] in np.setdiff1d(self.pick_pts, self.state[1]):  # if below
             new_pick_state = tuple(sorted(self.state[1] + tuple([new_position - self.grid_size[1]])))
             reward = 10
-        elif new_position == self.start and not np.setdiff1d(self.pick_pts, self.state[1]).any():  # if done
+        elif new_position == self.start and not np.setdiff1d(self.pick_pts, self.state[1]).any():  # if task is done
             new_pick_state = self.state[1]
             reward = 100
-            done = True
+            done = True  # terminate episode
         else:  # don't change pick state
             new_pick_state = self.state[1]
 
@@ -155,7 +157,8 @@ class Warehouse:
 
 
 def q_table_to_action_list(q_table, env):
-    """Get optimal list of actions from q-table."""
+    """Get optimal list of actions from q-table. A single run through the environment is simulated, using at each step
+    the action corresponding to the highest value in the row of the current state in the q-table."""
     i = 0
     max_steps = 100
     env.reset()
@@ -166,17 +169,18 @@ def q_table_to_action_list(q_table, env):
         i += 1
         if i == max_steps:
             break
-        action = np.argmax(q_table[env.states.index(env.state), :])
-        actions.append(action)
-        _, reward, done = env.step(action)
+        action = np.argmax(q_table[env.states.index(env.state), :])  # get action
+        actions.append(action)  # save action
+        _, reward, done = env.step(action)  # take action
         rewards += reward
+
     return actions, rewards
 
 
 def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_rate, r_threshold=None):
     """ Perform q-learning training on env."""
     q_table = np.zeros((env.n_states, env.n_actions))  # initialise q table
-    e_rate = 1  # exploration rate
+    e_rate = 1  # initial exploration rate
     rewards = []
 
     # For each episode
@@ -197,7 +201,7 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
 
             # Take action - get new state, reward and termination boolean
             old_state_idx = env.states.index(env.state)
-            new_state, reward, done = env.step(action)
+            new_state, reward, done = env.step(action)  # take step
             actions_current.append(action)
 
             # Update q_table
@@ -208,7 +212,7 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
             # Add reward
             rewards_current += reward
 
-            # Break loop if done
+            # Break loop if task is done
             if done:
                 break
 
@@ -221,7 +225,7 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
         # Do every n episodes
         if not episode % 100 and episode > 0:
             # Print for debugging
-            print(episode, rewards[-1], len(actions_current), e_rate)
+            # print(episode, rewards[-1], len(actions_current), e_rate)
 
             # Termination criterion from sequential vs. parallel comparison
             if all([ri == r_threshold for ri in rewards[-10:]]):
@@ -231,7 +235,7 @@ def train(env, n_episodes, n_steps, l_rate, d_rate, max_e_rate, min_e_rate, e_d_
 
 
 if __name__ == "__main__":
-    env = Warehouse(8, 5, 8, True)  # create warehouse
+    env = Warehouse(4, 3, 2)  # create warehouse
     # n_shelve_units, unit_width, n_pick_pts
     env.render()
     n_episodes = 1000

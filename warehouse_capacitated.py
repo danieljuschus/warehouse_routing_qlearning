@@ -2,7 +2,7 @@ import numpy as np
 import random
 import time
 from itertools import chain, combinations
-from more_itertools import sort_together, powerset
+from more_itertools import sort_together
 from math import comb  # Leave this for alternative calculation of number of states, might be useful for debugging
 import termtables as tt
 import matplotlib.pyplot as plt
@@ -10,13 +10,13 @@ import pandas as pd
 
 
 class Warehouse:
-    """Warehouse class. Includes single agent. Does not include any training methods."""
+    """Warehouse class, capacitated version. Includes single agent. Does not include any training methods."""
     def __init__(self, n_shelve_units=2, unit_width=1, n_pick_pts=1, capacity=1, pick_pts_rand=True):
         if n_shelve_units % 2 or unit_width < 1:  # check inputs
             raise ValueError("Invalid inputs for warehouse dimensions/layout!")
         self.n_shelve_units = n_shelve_units  # number of shelve units, must be even
         self.unit_width = unit_width  # width of each shelve unit
-        self.n_pick_pts = n_pick_pts
+        self.n_pick_pts = n_pick_pts  # number of pick points
         self.grid_size = (1 + n_shelve_units//2*3, unit_width*2 + 3)  # grid size of warehouse: (rows, columns)
         self.corridors, self.possible_actions, self.action_symbols = self.get_corridors()  # get corridor fields
         self.shelves = np.setdiff1d(range(np.prod(self.grid_size)), self.corridors)  # get shelve fields
@@ -37,6 +37,7 @@ class Warehouse:
     def get_states(self):
         """Return list of all states. A state has the format (x, l, (a, b)) where x is the index of the current,
         position, l the current loading and (a, b) a sorted tuple of the pick position that have been visited."""
+        # following line could be shortened with more_itertools.powerset as done in warehouse.py, left here as example
         pick_pt_comb = list(chain(*(list(combinations(self.pick_pts, i)) for i in range(len(self.pick_pts) + 1))))
         return [(corridor, loading, tuple(sorted(ppc)))
                 for corridor in self.corridors for loading in range(self.capacity+1) for ppc in pick_pt_comb]
@@ -190,7 +191,7 @@ if __name__ == "__main__":
     e_rate = 1  # exploration rate
     max_e_rate = 1
     min_e_rate = 0.001
-    e_d_rate = 0.0005  # exploration decay route
+    e_d_rate = 0.1  # exploration decay route
 
     rewards = []
 
